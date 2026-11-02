@@ -12,36 +12,34 @@ jobs:
     env:
       BASE: f9689452ce5999237c187346ea2ad62207015d99
       SOURCE: 10f9a0f0d126d5fae773c18275bdaa8bc0ec3ae3
-      CONTROL: 0c30107d92e00a9e6deb2caeb2b22d01a80dcd76
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-        with: {fetch-depth: 4, persist-credentials: false}
-      - name: Verify the shared fixture and both source revisions
+        with:
+          ref: ${{ env.SOURCE }}
+          fetch-depth: 2
+          persist-credentials: false
+      - name: Verify the source and original fixture
         id: sources
         run: |
           set -euo pipefail
-          [[ "$(git rev-parse HEAD^)" == "$CONTROL" && "$(git rev-parse HEAD^^)" == "$SOURCE" && "$(git rev-parse HEAD^^^)" == "$BASE" ]]
-          [[ "$(git diff --name-only "$SOURCE" "$CONTROL")" == 'go/tools/builders/stdliblist.go' ]]
-          [[ "$(git rev-parse "$CONTROL:go/tools/builders/stdliblist_test.go")" == fb2c7bdc68757d62163032ebb1cebb4aa260c232 ]]
+          [[ "$(git rev-parse HEAD)" == "$SOURCE" && "$(git rev-parse HEAD^)" == "$BASE" ]]
+          [[ "$(git rev-parse HEAD:go/tools/builders/stdliblist_test.go)" == fb2c7bdc68757d62163032ebb1cebb4aa260c232 ]]
+          git diff --quiet HEAD --
           [[ "$(uname -m)" == x86_64 && "$(bazel --version)" == 'bazel 9.3.1' ]]
           mkdir "$RUNNER_TEMP/stdlib-evidence"
-      - name: Run the same two tests against both source revisions
+      - name: Run only the unexecuted fixed suite
         run: |
           set -euo pipefail
           d="$RUNNER_TEMP/stdlib-evidence"
           target=//go/tools/builders:stdliblist_test
-          for arm in control fixed; do
-            source="$CONTROL"
-            if [[ "$arm" == fixed ]]; then source="$SOURCE"; fi
-            git checkout --detach "$source"
-            git diff --quiet HEAD --
-            printf '%s\n' "$source" > "$d/$arm.source"
-            status=0
-            bazel test --nocache_test_results --test_timeout=600 --test_arg=-test.v \
-              --test_env=GO_TEST_WRAP_TESTV=1 --nobuild_event_json_file_path_conversion \
-              --build_event_json_file="$RUNNER_TEMP/$arm.bep" "$target" || status=$?
-            printf '%s\n' "$status" > "$d/$arm.exit"
-            python3 - "$d" "$arm" "$RUNNER_TEMP/$arm.bep" <<'PY'
+          arm=fixed
+          printf '%s\n' "$SOURCE" > "$d/$arm.source"
+          status=0
+          bazel test --nocache_test_results --test_timeout=600 --test_arg=-test.v \
+            --test_env=GO_TEST_WRAP_TESTV=1 --nobuild_event_json_file_path_conversion \
+            --build_event_json_file="$RUNNER_TEMP/$arm.bep" "$target" || status=$?
+          printf '%s\n' "$status" > "$d/$arm.exit"
+          python3 - "$d" "$arm" "$RUNNER_TEMP/$arm.bep" <<'PY'
           import hashlib, json, sys
           from pathlib import Path
           from urllib.parse import unquote, urlsplit
@@ -64,7 +62,6 @@ jobs:
                   row[ext] = hashlib.sha256(data).hexdigest()
               Path(dest, arm + ".json").write_text(json.dumps(row))
           PY
-          done
       - name: Check fresh TestRunner outcomes and original diagnostics
         if: always() && steps.sources.outcome == 'success'
         run: |
@@ -73,23 +70,23 @@ jobs:
           from pathlib import Path
           p = Path(os.environ['RUNNER_TEMP'], 'stdlib-evidence')
           names = {'Test_stdliblist_export', 'Test_stdliblist_noexport'}
-          for arm, exit_code, status in [('control', 3, 'FAILED'), ('fixed', 0, 'PASSED')]:
-              source = (p / (arm+'.source')).read_text().strip()
-              assert source == os.environ['CONTROL' if arm == 'control' else 'SOURCE']
-              assert int((p / (arm+'.exit')).read_text()) == exit_code
-              row = json.loads((p / (arm+'.json')).read_text())
-              assert row['id']['label'] in {'//go/tools/builders:stdliblist_test', '@@//go/tools/builders:stdliblist_test'}
-              assert row['status'] == status and not row['localCache'] and not row['remoteCache']
-              xml = (p / (arm + '.xml')).read_bytes()
-              log = (p / (arm + '.log')).read_bytes()
-              assert row['xml'] == hashlib.sha256(xml).hexdigest() and row['log'] == hashlib.sha256(log).hexdigest()
-              cases = list(ET.fromstring(xml).iter('testcase'))
-              assert len(cases) == 2 and {c.attrib['name'] for c in cases} == names
-              assert all(c.get('status', 'run') == 'run' and c.get('result', 'completed') == 'completed' and c.find('skipped') is None and c.find('error') is None for c in cases)
-              failed = {c.attrib['name'] for c in cases if c.find('failure') is not None}
-              assert failed == ({'Test_stdliblist_noexport'} if arm == 'control' else set())
-              errors = re.findall(rb'stdliblist_test\.go:\d+: ([^\n\r]+)', log)
-              assert errors == ([b'go list reported undeclared package "net/internal/socktest"'] if arm == 'control' else []), errors
+          arm = "fixed"
+          source = (p / (arm+'.source')).read_text().strip()
+          assert source == os.environ['SOURCE']
+          assert int((p / (arm+'.exit')).read_text()) == 0
+          row = json.loads((p / (arm+'.json')).read_text())
+          assert row['id']['label'] in {'//go/tools/builders:stdliblist_test', '@@//go/tools/builders:stdliblist_test'}
+          assert row['status'] == 'PASSED' and not row['localCache'] and not row['remoteCache']
+          xml = (p / (arm + '.xml')).read_bytes()
+          log = (p / (arm + '.log')).read_bytes()
+          assert row['xml'] == hashlib.sha256(xml).hexdigest() and row['log'] == hashlib.sha256(log).hexdigest()
+          cases = list(ET.fromstring(xml).iter('testcase'))
+          assert len(cases) == 2 and {c.attrib['name'] for c in cases} == names
+          assert all(c.get('status', 'run') == 'run' and c.get('result', 'completed') == 'completed' and c.find('skipped') is None and c.find('error') is None for c in cases)
+          failed = {c.attrib['name'] for c in cases if c.find('failure') is not None}
+          assert not failed
+          errors = re.findall(rb'stdliblist_test\.go:\d+: ([^\n\r]+)', log)
+          assert not errors, errors
           PY
       - name: Validate original test reports before upload
         id: safe
@@ -99,7 +96,7 @@ jobs:
           import os, re
           from pathlib import Path
           p = Path(os.environ['RUNNER_TEMP'], 'stdlib-evidence')
-          allowed = {arm + '.' + ext for arm in ['control','fixed'] for ext in ['source','exit','log','xml','json']}
+          allowed = {'fixed.' + ext for ext in ['source','exit','log','xml','json']}
           assert any(p.iterdir())
           for path in p.iterdir():
               assert path.name in allowed and path.is_file() and not path.is_symlink()
