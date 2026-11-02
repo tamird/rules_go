@@ -241,7 +241,7 @@ func stdliblist(args []string) error {
 	defer func() { cleanup() }()
 
 	newGoRoot := filepath.Join(cloneBase, goenv.sdk)
-	if err := replicateSDK(abs(goenv.sdk), abs(newGoRoot), srcs); err != nil {
+	if err := replicate(abs(goenv.sdk), abs(newGoRoot), replicatePaths("src", "pkg/tool", "pkg/include")); err != nil {
 		return err
 	}
 
