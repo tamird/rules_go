@@ -1,0 +1,65 @@
+name: Measure SDK bootstrap cache reuse
+on:
+  push:
+    branches: [qualification/sdk-tool-bootstrap-compare]
+permissions:
+  contents: read
+jobs:
+  measure:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - name: Count Go compiler invocations for objdump
+        env:
+          TARGET: "@go_default_sdk//:sdk-cache-sample.txt"
+        run: |
+          mkdir "$RUNNER_TEMP/probe"
+          bazel build --build_event_json_file="$RUNNER_TEMP/measure.bep" "$TARGET"
+          cp "$(bazel cquery --output=files "$TARGET")" "$RUNNER_TEMP/probe/packages.txt"
+      - name: Reconcile the declared target and the two cache conditions
+        if: always()
+        shell: python
+        run: |
+          import datetime, json, os
+          from pathlib import Path
+          temp = Path(os.environ["RUNNER_TEMP"])
+          probe = temp / "probe"
+          expected = "@go_default_sdk//:sdk-cache-sample.txt"
+          verdict = dict(source=os.environ["GITHUB_SHA"], supplier="aec31ccc8", expected=[expected], executed=[], failures=[], missing=[], skips=[])
+          try:
+              events = [json.loads(line) for line in (temp / "measure.bep").read_text().splitlines()]
+              for event in events:
+                  if target := event["id"].get("targetCompleted"):
+                      if target["label"].endswith("//:sdk-cache-sample.txt") and event["completed"].get("success"):
+                          verdict["executed"].append(target["label"])
+                  if finished := event.get("finished"):
+                      verdict["finishedAt"] = finished["finishTime"]
+              assert len(verdict["executed"]) == 1
+              version, *rows, smoke = (probe / "packages.txt").read_text().splitlines()
+              assert version.startswith("go version go") and version.endswith("linux/amd64")
+              assert smoke.startswith("TEXT main.main(SB)")
+              packages = {"shared": set(), "empty": set()}
+              for row in rows:
+                  mode, pkg = row.split()
+                  assert pkg not in packages[mode]
+                  packages[mode].add(pkg)
+              assert packages["shared"] and packages["shared"] <= packages["empty"]
+              verdict.update(sdk=version, compiledPackages={k: len(v) for k, v in packages.items()})
+          except Exception as error:
+              verdict["failures"].append(repr(error))
+          if not verdict["executed"]:
+              verdict["missing"].append(expected)
+          verdict["verifiedAt"] = datetime.datetime.now(datetime.timezone.utc).isoformat()
+          (probe / "verdict.json").write_text(json.dumps(verdict, indent=2) + "\n")
+          print(json.dumps(verdict))
+          if verdict["failures"] or verdict["missing"]:
+              raise SystemExit(1)
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        if: always()
+        with:
+          name: sdk-tool-cache-comparison
+          path: ${{ runner.temp }}/probe
+          if-no-files-found: error

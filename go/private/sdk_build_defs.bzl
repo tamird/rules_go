@@ -70,6 +70,7 @@ def define_sdk_repository_targets(
         # The .exe suffix is required on Windows and harmless on other platforms.
         # Output attributes are not configurable, so we use it everywhere.
         out_pack = "pack.exe",
+        out_cache_sample = "sdk-cache-sample.txt",
         out_covdata = "covdata.exe",
         sdk = ":go_sdk",
     )

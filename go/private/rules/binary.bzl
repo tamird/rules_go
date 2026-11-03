@@ -595,6 +595,7 @@ exit /b %GO_EXIT_CODE%
     else:
         # Pass (potentially) generated files in via args to support path mapping.
         args = ctx.actions.args()
+        args.add(ctx.outputs.out_cache_sample)
         args.add(ctx.outputs.out_pack)
         args.add(ctx.outputs.out_covdata)
         args.add(out)
@@ -633,7 +634,7 @@ exit /b %GO_EXIT_CODE%
                 transitive = [sdk.headers, sdk.srcs, sdk.libs, sdk.tools],
             ),
             toolchain = None,
-            outputs = [out, ctx.outputs.out_pack, ctx.outputs.out_covdata],
+            outputs = [out, ctx.outputs.out_pack, ctx.outputs.out_covdata, ctx.outputs.out_cache_sample],
             execution_requirements = SUPPORTS_PATH_MAPPING_REQUIREMENT,
             mnemonic = "GoToolchainBinaryBuild",
         )
@@ -659,6 +660,7 @@ go_tool_binary = rule(
             doc = "Raw value to pass to go build via -ldflags without tokenization",
         ),
         "out_pack": attr.output(),
+        "out_cache_sample": attr.output(),
         "out_covdata": attr.output(),
         "_binary_wrapper": attr.label(
             allow_single_file = True,
