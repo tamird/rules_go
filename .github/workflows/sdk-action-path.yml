@@ -1,0 +1,113 @@
+name: Check the exec SDK action runner
+on:
+  push:
+    branches: [qualification/sdk-action-path]
+permissions:
+  contents: read
+jobs:
+  runner:
+    if: github.repository == 'tamird/rules_go' && github.run_attempt == 1
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      BASE: f9689452ce5999237c187346ea2ad62207015d99
+      SOURCE: 6b4da63029e77fc08377ef9b7e0181fec5c7aad5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ env.SOURCE }}
+          fetch-depth: 2
+          persist-credentials: false
+      - name: Verify the source and original fixture
+        id: sources
+        run: |
+          set -euo pipefail
+          [[ "$(git rev-parse HEAD)" == "$SOURCE" && "$(git rev-parse HEAD^)" == "$BASE" ]]
+          [[ "$(git rev-parse HEAD:tests/integration/go_bin_runner/go_bin_runner_test.go)" == e3890f492ea087c122ea1ac1f46a9a5f39ca8f6b ]]
+          git diff --quiet HEAD --
+          [[ "$(uname -m)" == x86_64 && "$(bazel --version)" == 'bazel 9.3.1' ]]
+          mkdir "$RUNNER_TEMP/runner-evidence"
+      - name: Run the complete Go runner integration owner
+        run: |
+          set -euo pipefail
+          d="$RUNNER_TEMP/runner-evidence"
+          target=//tests/integration/go_bin_runner:go_bin_runner_test
+          arm=fixed
+          printf '%s\n' "$SOURCE" > "$d/$arm.source"
+          status=0
+          bazel test --nocache_test_results --test_timeout=1500 --jobs=4 --test_env=USE_BAZEL_VERSION=9.3.1 --test_env=PATH --test_arg=-test.v \
+            --test_env=GO_TEST_WRAP_TESTV=1 --nobuild_event_json_file_path_conversion \
+            --build_event_json_file="$RUNNER_TEMP/$arm.bep" "$target" || status=$?
+          date -u --iso-8601=ns > "$d/$arm.finished"
+          printf '%s\n' "$status" > "$d/$arm.exit"
+          python3 - "$d" "$arm" "$RUNNER_TEMP/$arm.bep" <<'PY'
+          import hashlib, json, sys
+          from pathlib import Path
+          from urllib.parse import unquote, urlsplit
+          dest, arm, bep = sys.argv[1:]
+          results = [e for line in Path(bep).read_text().splitlines() if 'testResult' in (e := json.loads(line))]
+          if len(results) == 1:
+              event = results[0]
+              result = event["testResult"]
+              row = dict(id=event["id"]["testResult"], status=result["status"],
+                         localCache=result.get("cachedLocally", False),
+                         remoteCache=result.get("executionInfo", {}).get("cachedRemotely", False))
+              for output in result["testActionOutput"]:
+                  if output["name"] not in {"test.log", "test.xml"}:
+                      continue
+                  location = urlsplit(output["uri"])
+                  assert location.scheme == "file"
+                  data = Path(unquote(location.path)).read_bytes()
+                  ext = output["name"].split(".")[1]
+                  Path(dest, f"{arm}.{ext}").write_bytes(data)
+                  row[ext] = hashlib.sha256(data).hexdigest()
+              Path(dest, arm + ".json").write_text(json.dumps(row))
+          PY
+      - name: Check fresh TestRunner outcomes and original diagnostics
+        if: always() && steps.sources.outcome == 'success'
+        run: |
+          python3 - <<'PY'
+          import hashlib, json, os, re, xml.etree.ElementTree as ET
+          from pathlib import Path
+          p = Path(os.environ['RUNNER_TEMP'], 'runner-evidence')
+          names = {'TestGoEnv','TestGoVersionFromScript','TestNoGoInExec','TestGoOnActionPath','TestGoActionExitStatus'}
+          arm = "fixed"
+          source = (p / (arm+'.source')).read_text().strip()
+          assert source == os.environ['SOURCE']
+          assert int((p / (arm+'.exit')).read_text()) == 0
+          row = json.loads((p / (arm+'.json')).read_text())
+          assert row['id']['label'] in {'//tests/integration/go_bin_runner:go_bin_runner_test', '@@//tests/integration/go_bin_runner:go_bin_runner_test'}
+          assert row['status'] == 'PASSED' and not row['localCache'] and not row['remoteCache']
+          xml = (p / (arm + '.xml')).read_bytes()
+          log = (p / (arm + '.log')).read_bytes()
+          assert row['xml'] == hashlib.sha256(xml).hexdigest() and row['log'] == hashlib.sha256(log).hexdigest()
+          cases = list(ET.fromstring(xml).iter('testcase'))
+          assert len(cases) == len(names) and {c.attrib['name'] for c in cases} == names
+          assert all(c.get('status', 'run') == 'run' and c.get('result', 'completed') == 'completed' and c.find('skipped') is None and c.find('error') is None for c in cases)
+          failed = {c.attrib['name'] for c in cases if c.find('failure') is not None}
+          assert not failed
+          import datetime
+          verdict = dict(source=source, owner=row, cases=sorted(names), status="PASS", verified=datetime.datetime.now(datetime.timezone.utc).isoformat())
+          (p / 'fixed.verdict').write_text(json.dumps(verdict))
+          print(json.dumps(verdict))
+          PY
+      - name: Validate original test reports before upload
+        id: safe
+        if: always() && steps.sources.outcome == 'success'
+        run: |
+          python3 - <<'PY'
+          import os, re
+          from pathlib import Path
+          p = Path(os.environ['RUNNER_TEMP'], 'runner-evidence')
+          allowed = {'fixed.' + ext for ext in ['source','exit','log','xml','json','finished','verdict']}
+          assert any(p.iterdir())
+          for path in p.iterdir():
+              assert path.name in allowed and path.is_file() and not path.is_symlink()
+              assert not re.search(rb'(?i)authorization\s*:|x-buildbuddy-api-key|bearer\s+[A-Za-z0-9_.-]{12,}', path.read_bytes())
+          PY
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        if: always() && steps.safe.outcome == 'success'
+        with:
+          name: sdk-action-path
+          path: ${{ runner.temp }}/runner-evidence
+          if-no-files-found: error
