@@ -309,6 +309,26 @@ this attribute. Use ``go_context`` to gain access to `the context`_.
         },
     )
 
+For tools that invoke ``go`` by name, ``go_run_with_sdk`` runs the tool
+with an absolute PATH containing only the execution platform's Go command.
+For example, this action writes the tool's standard output to a declared file:
+
+.. code:: bzl
+
+    load("@io_bazel_rules_go//go:def.bzl", "go_run_with_sdk")
+
+    def _generate(ctx):
+        go_run_with_sdk(
+            ctx,
+            executable = ctx.attr.tool[DefaultInfo].files_to_run,
+            arguments = [ctx.file.src.path],
+            inputs = [ctx.file.src],
+            stdout = ctx.outputs.out,
+        )
+
+Without ``stdout``, the tool inherits the action's standard output. Declare
+other outputs with ``outputs``, as for ``ctx.actions.run``.
+
 
 Rules and functions
 -------------------
