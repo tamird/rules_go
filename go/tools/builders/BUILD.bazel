@@ -154,6 +154,7 @@ filegroup(
         "preprofile.go",
         "read.go",
         "replicate.go",
+        "runwithsdk.go",
         "stdlib.go",
         "stdliblist.go",
     ] + select({

@@ -35,6 +35,7 @@ load(
 )
 load(
     "//go/private:go_toolchain.bzl",
+    _go_run_with_sdk = "go_run_with_sdk",
     _go_toolchain = "go_toolchain",
 )
 load(
@@ -144,6 +145,7 @@ RULES_GO_VERSION = "0.50.0"
 
 go_context = _go_context
 go_rule = _go_rule
+go_run_with_sdk = _go_run_with_sdk
 gomock = _gomock
 go_sdk = _go_sdk
 go_tool_library = _go_tool_library

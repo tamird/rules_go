@@ -16,7 +16,7 @@ Toolchain rules used by go.
 """
 
 load("@bazel_skylib//lib:selects.bzl", "selects")
-load("//go/private:common.bzl", "GO_TOOLCHAIN")
+load("//go/private:common.bzl", "GO_TOOLCHAIN", "GO_TOOLCHAIN_LABEL")
 load("//go/private:platforms.bzl", "PLATFORMS")
 load("//go/private:providers.bzl", "GoSDK")
 load("//go/private/actions:archive.bzl", "emit_archive")
@@ -26,6 +26,9 @@ load("//go/private/actions:stdlib.bzl", "emit_stdlib")
 
 def _go_toolchain_impl(ctx):
     sdk = ctx.attr.sdk[GoSDK]
+    name = "go.exe" if sdk.goos == "windows" else "go"
+    go_on_path = ctx.actions.declare_file(ctx.label.name + "/path/" + name)
+    ctx.actions.symlink(output = go_on_path, target_file = sdk.go, is_executable = True)
     cross_compile = ctx.attr.goos != sdk.goos or ctx.attr.goarch != sdk.goarch
     return [
         ctx.attr.sdk[DefaultInfo],
@@ -50,10 +53,42 @@ def _go_toolchain_impl(ctx):
 
             # Internal fields -- may be read by emit functions.
             _builder = ctx.executable.builder,
+            _go_on_path = go_on_path,
             _pack = ctx.executable.pack,
             _covdata = ctx.executable.covdata,
         ),
     ]
+
+def go_run_with_sdk(ctx, *, executable, arguments = [], stdout = None, outputs = [], tools = [], **kwargs):
+    """Runs an action with only the execution platform's Go command on PATH.
+
+    If unset, GOROOT defaults to that SDK's root.
+
+    Args:
+        ctx: Rule context. The selected execution group must declare the Go toolchain.
+        executable: An executable File or FilesToRunProvider for that execution group.
+        arguments: Arguments to the executable, as for ctx.actions.run.
+        stdout: Optional File to declare as an output and write standard output to.
+        outputs: Other output Files.
+        tools: Additional action tools, as for ctx.actions.run.
+        **kwargs: Other ctx.actions.run arguments. PATH is set at execution time.
+    """
+    group = kwargs.get("exec_group")
+    tc = (ctx.exec_groups[group] if group else ctx).toolchains[GO_TOOLCHAIN_LABEL]
+    args = ctx.actions.args()
+    sdk = tc.sdk
+    args.add_all(["runwithsdk", tc._go_on_path, sdk.root_file, stdout or "", getattr(executable, "executable", executable)])
+    sdk_files = depset([sdk.go, sdk.root_file], transitive = [sdk.srcs, sdk.headers, sdk.tools, sdk.libs])
+    if type(tools) == "depset":
+        tools = [tools]
+    ctx.actions.run(
+        executable = tc._builder,
+        arguments = [args] + list(arguments),
+        outputs = list(outputs) + ([stdout] if stdout else []),
+        tools = [executable, tc._go_on_path, sdk_files] + list(tools),
+        toolchain = GO_TOOLCHAIN_LABEL,
+        **kwargs
+    )
 
 go_toolchain = rule(
     _go_toolchain_impl,

@@ -28,12 +28,20 @@ func main() {
 	log.SetFlags(0)
 	log.SetPrefix("builder: ")
 
+	verb := verbFromName(os.Args[0])
+	if verb == "" && len(os.Args) > 1 && os.Args[1] == "runwithsdk" {
+		// -param= belongs to the wrapped program, not to the builder.
+		if err := runWithSDK(os.Args[2:]); err != nil {
+			log.Fatal(err)
+		}
+		return
+	}
+
 	args, _, err := expandParamsFiles(os.Args[1:])
 	if err != nil {
 		log.Fatal(err)
 	}
 
-	verb := verbFromName(os.Args[0])
 	if verb == "" && len(args) == 0 {
 		log.Fatalf("usage: %s verb options...", os.Args[0])
 	}
