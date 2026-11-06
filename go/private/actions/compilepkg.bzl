@@ -40,6 +40,18 @@ def _facts(v):
         facts_file.path,
     )
 
+def _generated_srcroot_arg(src):
+    if src.is_source or src.extension != "go":
+        return None
+    root = src.root.path
+    if src.short_path.startswith("../"):
+        _, repo, relative = src.short_path.split("/", 2)
+        # In the sibling layout the repository is part of the output root.
+        # In the default layout external/<repo>/ is already below that root.
+        if src.path == root + "/" + relative:
+            return root + "=>../" + repo
+    return root
+
 def _embedroot_arg(src):
     return src.root.path
 
@@ -107,6 +119,13 @@ def emit_compilepkg(
 
     compile_args = go.tool_args(go)
     compile_args.add("-pack", go.toolchain._pack)
+    compile_args.add_all(
+        sources,
+        before_each = "-srcroot",
+        map_each = _generated_srcroot_arg,
+        uniquify = True,
+        expand_directories = False,
+    )
     compile_args.add_all(embedsrcs, before_each = "-embedsrc", expand_directories = False)
     compile_args.add_all(
         sources + [out_lib] + embedsrcs,

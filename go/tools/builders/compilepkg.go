@@ -39,7 +39,7 @@ func compilePkg(args []string) error {
 	fs := flag.NewFlagSet("GoCompilePkg", flag.ExitOnError)
 	goenv := envFlags(fs)
 	var pack string
-	var unfilteredSrcs, coverSrcs, embedSrcs, embedLookupDirs, embedRoots, recompileInternalDeps multiFlag
+	var unfilteredSrcs, srcRoots, coverSrcs, embedSrcs, embedLookupDirs, embedRoots, recompileInternalDeps multiFlag
 	var deps archiveMultiFlag
 	var importPath, packagePath, packageListPath, coverMode string
 	var outLinkobjPath, outInterfacePath, outImportsPath, cgoExportHPath, cgoGoSrcsPath string
@@ -49,6 +49,7 @@ func compilePkg(args []string) error {
 	var pgoprofile string
 	fs.StringVar(&pack, "pack", "", "Path of the pack tool.")
 	fs.Var(&unfilteredSrcs, "src", ".go, .c, .cc, .m, .mm, .s, or .S file to be filtered and compiled")
+	fs.Var(&srcRoots, "srcroot", "generated Go source root to trim or rewrite in compiler filenames")
 	fs.Var(&coverSrcs, "cover", ".go file that should be instrumented for coverage (must also be a -src)")
 	fs.Var(&embedSrcs, "embedsrc", "file that may be compiled into the package with a //go:embed directive")
 	fs.Var(&embedLookupDirs, "embedlookupdir", "Root-relative paths to directories relative to which //go:embed directives are resolved")
@@ -114,6 +115,7 @@ func compilePkg(args []string) error {
 		importPath,
 		packagePath,
 		srcs,
+		srcRoots,
 		deps,
 		coverMode,
 		coverSrcs,
@@ -147,6 +149,7 @@ func compileArchive(
 	importPath string,
 	packagePath string,
 	srcs archiveSrcs,
+	srcRoots []string,
 	deps []archive,
 	coverMode string,
 	coverSrcs []string,
@@ -329,11 +332,11 @@ func compileArchive(
 		}
 	}
 
-	trimPath, err := createTrimPath()
+	sourceTrimPath, err := createTrimPath(srcRoots)
 	if err != nil {
 		return err
 	}
-	trimPath = workDir + "=>;" + trimPath
+	trimPath := workDir + "=>;" + sourceTrimPath
 
 	// If we have cgo, generate separate C and go files, and compile the
 	// C files.
@@ -343,20 +346,20 @@ func compileArchive(
 		if coverMode != "" && cgoGoSrcsForNogoPath != "" {
 			// If the package uses Cgo, compile .s and .S files with cgo2, not the Go assembler.
 			// Otherwise: the .s/.S files will be compiled with the Go assembler later
-			srcDir, goSrcs, objFiles, err = cgo2(goenv, goSrcs, cgoSrcs, cSrcs, cxxSrcs, objcSrcs, objcxxSrcs, sSrcs, hSrcs, packagePath, packageName, cc, cppFlags, cFlags, cxxFlags, objcFlags, objcxxFlags, ldFlags, cgoExportHPath, "")
+			srcDir, goSrcs, objFiles, err = cgo2(goenv, sourceTrimPath, goSrcs, cgoSrcs, cSrcs, cxxSrcs, objcSrcs, objcxxSrcs, sSrcs, hSrcs, packagePath, packageName, cc, cppFlags, cFlags, cxxFlags, objcFlags, objcxxFlags, ldFlags, cgoExportHPath, "")
 			if err != nil {
 				return err
 			}
 			// Also run cgo on original source files, not coverage instrumented, if using nogo.
 			// Only the generated Go sources are passed to the separate nogo action via
 			// cgoGoSrcsForNogoPath, so skip the duplicate C compilation and cgo probe link.
-			if err := cgo2GeneratedGoSrcsForNogo(goenv, cgoSrcsNogo, cSrcs, cxxSrcs, objcSrcs, objcxxSrcs, hSrcs, packagePath, cc, cppFlags, cFlags, ldFlags, cgoGoSrcsForNogoPath, filepath.Join(srcDir, "_cgo_imports.go")); err != nil {
+			if err := cgo2GeneratedGoSrcsForNogo(goenv, sourceTrimPath, cgoSrcsNogo, cSrcs, cxxSrcs, objcSrcs, objcxxSrcs, hSrcs, packagePath, cc, cppFlags, cFlags, ldFlags, cgoGoSrcsForNogoPath, filepath.Join(srcDir, "_cgo_imports.go")); err != nil {
 				return err
 			}
 		} else {
 			// If the package uses Cgo, compile .s and .S files with cgo2, not the Go assembler.
 			// Otherwise: the .s/.S files will be compiled with the Go assembler later
-			srcDir, goSrcs, objFiles, err = cgo2(goenv, goSrcs, cgoSrcs, cSrcs, cxxSrcs, objcSrcs, objcxxSrcs, sSrcs, hSrcs, packagePath, packageName, cc, cppFlags, cFlags, cxxFlags, objcFlags, objcxxFlags, ldFlags, cgoExportHPath, cgoGoSrcsForNogoPath)
+			srcDir, goSrcs, objFiles, err = cgo2(goenv, sourceTrimPath, goSrcs, cgoSrcs, cSrcs, cxxSrcs, objcSrcs, objcxxSrcs, sSrcs, hSrcs, packagePath, packageName, cc, cppFlags, cFlags, cxxFlags, objcFlags, objcxxFlags, ldFlags, cgoExportHPath, cgoGoSrcsForNogoPath)
 			if err != nil {
 				return err
 			}
@@ -374,11 +377,7 @@ func compileArchive(
 				gcFlags = append(gcFlags[:i], gcFlags[i+1:]...)
 				rewrites := strings.Split(flag[len("-trimpath="):], ";")
 				for j, rewrite := range rewrites {
-					prefix, replace := rewrite, ""
-					if p := strings.LastIndex(rewrite, "=>"); p >= 0 {
-						prefix, replace = rewrite[:p], rewrite[p:]
-					}
-					rewrites[j] = abs(prefix) + replace
+					rewrites[j] = absoluteRewrite(rewrite)
 				}
 				rewrites = append(rewrites, trimPath)
 				trimPath = strings.Join(rewrites, ";")
@@ -591,16 +590,23 @@ func appendToArchive(goenv *env, pack, outPath string, objFiles []string) error 
 	return goenv.runCommand(args)
 }
 
-func createTrimPath() (string, error) {
-	trimPath, err := os.Getwd()
+func createTrimPath(srcRoots []string) (string, error) {
+	cwd, err := os.Getwd()
 	if err != nil {
 		return "", err
 	}
-	// Create a trim path to make paths relative to the working directory.
-	// First, attempt to trim the working directory, and if this fails, replace
-	// the parent of the working directory with "..".
-	trimPath = fmt.Sprintf("%s;%s=>..", trimPath, filepath.Dir(trimPath))
-	return trimPath, nil
+	// Apply the generated roots before the execroot that contains them.
+	for i, root := range srcRoots {
+		srcRoots[i] = absoluteRewrite(root)
+	}
+	return strings.Join(append(srcRoots, cwd, filepath.Dir(cwd)+"=>.."), ";"), nil
+}
+
+func absoluteRewrite(rewrite string) string {
+	if p := strings.LastIndex(rewrite, "=>"); p >= 0 {
+		return abs(rewrite[:p]) + rewrite[p:]
+	}
+	return abs(rewrite)
 }
 
 func sanitizePathForIdentifier(path string) string {

@@ -26,6 +26,20 @@ func TestMain(m *testing.M) {
 		Main: `
 -- BUILD.bazel --
 load("@io_bazel_rules_go//go:def.bzl", "go_binary", "go_library")
+load("@other_repo//:generate.bzl", "generate")
+
+generate(
+    name = "generated_cgo",
+    src = "maincgo.go",
+    out = "generated.go",
+)
+
+go_library(
+    name = "generated_cgo_lib",
+    srcs = [":generated_cgo"],
+    cgo = True,
+    importpath = "example.com/main_repo/generatedcgo",
+)
 
 go_library(
     name = "maincgo",
@@ -38,7 +52,7 @@ go_library(
 go_library(
     name = "main_lib",
     srcs = ["main.go"],
-    deps = [":maincgo", "@other_repo//:other", "@other_repo//:othercgo"],
+    deps = [":generated_cgo_lib", ":maincgo", "@other_repo//:other", "@other_repo//:othercgo"],
     importpath = "example.com/main_repo/main",
     visibility = ["//visibility:private"],
 )
@@ -54,6 +68,7 @@ package main
 import "runtime"
 import "fmt"
 import "example.com/main_repo/maincgo"
+import generatedcgo "example.com/main_repo/generatedcgo"
 import "example.com/other_repo/other"
 import "example.com/other_repo/othercgo"
 
@@ -65,7 +80,9 @@ func File() string {
 func main() {
 	fmt.Println(File())
 	fmt.Println(maincgo.File())
+	fmt.Println(generatedcgo.GeneratedFile())
 	fmt.Println(other.File())
+	fmt.Println(other.GeneratedFile())
 	fmt.Println(othercgo.File())
 }
 -- maincgo.go --
@@ -81,12 +98,31 @@ func File() string {
 -- other_repo/MODULE.bazel --
 module(name = "other_repo")
 bazel_dep(name = "rules_go", repo_name = "io_bazel_rules_go")
+-- other_repo/generate.bzl --
+def _generate(ctx):
+    ctx.actions.expand_template(
+        template = ctx.file.src,
+        output = ctx.outputs.out,
+        substitutions = {"func File()": "func GeneratedFile()"},
+    )
+
+generate = rule(
+    implementation = _generate,
+    attrs = {"src": attr.label(allow_single_file = True), "out": attr.output()},
+)
 -- other_repo/BUILD.bazel --
 load("@io_bazel_rules_go//go:def.bzl", "go_library")
+load(":generate.bzl", "generate")
+
+generate(
+    name = "generated",
+    src = "other.go",
+    out = "generated.go",
+)
 
 go_library(
     name = "other",
-    srcs = ["other.go"],
+    srcs = ["other.go", ":generated"],
     importpath = "example.com/other_repo/other",
     visibility = ["//visibility:public"],
 )
@@ -133,14 +169,18 @@ local_path_override(
 var expectedDefault = regexp.MustCompile(`^
 main.go
 maincgo.go
+generated.go
 external/other_repo[+~]/other.go
+external/other_repo[+~]/generated.go
 external/other_repo[+~]/othercgo.go
 $`)
 
 var expectedSibling = regexp.MustCompile(`^
 main.go
 maincgo.go
+generated.go
 ../other_repo[+~]/other.go
+../other_repo[+~]/generated.go
 ../other_repo[+~]/othercgo.go
 $`)
 
