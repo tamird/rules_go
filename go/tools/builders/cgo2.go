@@ -33,7 +33,7 @@ import (
 )
 
 // cgo2 processes a set of mixed source files with cgo.
-func cgo2(goenv *env, goSrcs, cgoSrcs, cSrcs, cxxSrcs, objcSrcs, objcxxSrcs, sSrcs, hSrcs []string, packagePath, packageName string, cc string, cppFlags, cFlags, cxxFlags, objcFlags, objcxxFlags, ldFlags []string, cgoExportHPath string, cgoGoSrcsPath string) (srcDir string, allGoSrcs, cObjs []string, err error) {
+func cgo2(goenv *env, trimPath string, goSrcs, cgoSrcs, cSrcs, cxxSrcs, objcSrcs, objcxxSrcs, sSrcs, hSrcs []string, packagePath, packageName string, cc string, cppFlags, cFlags, cxxFlags, objcFlags, objcxxFlags, ldFlags []string, cgoExportHPath string, cgoGoSrcsPath string) (srcDir string, allGoSrcs, cObjs []string, err error) {
 	// Report an error if the C/C++ toolchain wasn't configured.
 	if cc == "" {
 		err := cgoError(cgoSrcs[:])
@@ -62,7 +62,7 @@ func cgo2(goenv *env, goSrcs, cgoSrcs, cSrcs, cxxSrcs, objcSrcs, objcxxSrcs, sSr
 	}
 	defer cleanup()
 
-	gen, err := generateCgoSources(goenv, workDir, "cgo", cgoSrcs, cSrcs, cxxSrcs, objcSrcs, objcxxSrcs, hSrcs, packagePath, cppFlags, cFlags, ldFlags, cgoExportHPath)
+	gen, err := generateCgoSources(goenv, trimPath, workDir, "cgo", cgoSrcs, cSrcs, cxxSrcs, objcSrcs, objcxxSrcs, hSrcs, packagePath, cppFlags, cFlags, ldFlags, cgoExportHPath)
 	if err != nil {
 		return "", nil, nil, err
 	}
@@ -160,7 +160,7 @@ func cgo2(goenv *env, goSrcs, cgoSrcs, cSrcs, cxxSrcs, objcSrcs, objcxxSrcs, sSr
 	return workDir, allGoSrcs, cObjs, nil
 }
 
-func cgo2GeneratedGoSrcsForNogo(goenv *env, cgoSrcs, cSrcs, cxxSrcs, objcSrcs, objcxxSrcs, hSrcs []string, packagePath string, cc string, cppFlags, cFlags, ldFlags []string, cgoGoSrcsPath string, cgoImportsSrc string) error {
+func cgo2GeneratedGoSrcsForNogo(goenv *env, trimPath string, cgoSrcs, cSrcs, cxxSrcs, objcSrcs, objcxxSrcs, hSrcs []string, packagePath string, cc string, cppFlags, cFlags, ldFlags []string, cgoGoSrcsPath string, cgoImportsSrc string) error {
 	if cc == "" {
 		err := cgoError(cgoSrcs[:])
 		err = append(err, cSrcs...)
@@ -179,7 +179,7 @@ func cgo2GeneratedGoSrcsForNogo(goenv *env, cgoSrcs, cSrcs, cxxSrcs, objcSrcs, o
 	}
 	defer cleanup()
 
-	gen, err := generateCgoSources(goenv, workDir, "cgo_nogo", cgoSrcs, cSrcs, cxxSrcs, objcSrcs, objcxxSrcs, hSrcs, packagePath, cppFlags, cFlags, ldFlags, "")
+	gen, err := generateCgoSources(goenv, trimPath, workDir, "cgo_nogo", cgoSrcs, cSrcs, cxxSrcs, objcSrcs, objcxxSrcs, hSrcs, packagePath, cppFlags, cFlags, ldFlags, "")
 	if err != nil {
 		return err
 	}
@@ -199,7 +199,7 @@ type cgoGenResult struct {
 	cgoMainC        string
 }
 
-func generateCgoSources(goenv *env, baseWorkDir, subdir string, cgoSrcs, cSrcs, cxxSrcs, objcSrcs, objcxxSrcs, hSrcs []string, packagePath string, cppFlags, cFlags, ldFlags []string, cgoExportHPath string) (*cgoGenResult, error) {
+func generateCgoSources(goenv *env, trimPath, baseWorkDir, subdir string, cgoSrcs, cSrcs, cxxSrcs, objcSrcs, objcxxSrcs, hSrcs []string, packagePath string, cppFlags, cFlags, ldFlags []string, cgoExportHPath string) (*cgoGenResult, error) {
 	// cgo2 will gather sources into a single temporary directory, since nogo
 	// scanners might want to include or exclude these sources we need to ensure
 	// that a fragment of the path is stable and human friendly enough to be
@@ -308,10 +308,6 @@ func generateCgoSources(goenv *env, baseWorkDir, subdir string, cgoSrcs, cSrcs, 
 	hdrIncludes = append(hdrIncludes, "-iquote", workDir) // for _cgo_export.h
 
 	// Trim the path in //line comments emitted by cgo.
-	trimPath, err := createTrimPath()
-	if err != nil {
-		return nil, err
-	}
 	args := goenv.goTool("cgo", "-srcdir", srcDir, "-objdir", workDir, "-trimpath", trimPath)
 	if ldflagsFile != nil {
 		// The "@" prefix tells cgo to read arguments from the file.
