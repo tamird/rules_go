@@ -52,6 +52,7 @@ bzl_library(
         "//go/private/actions:baseline_coverage",
         "//go/private/rules:transition",
         "@rules_cc//cc/common",
+        "@rules_shell//shell/toolchains:toolchains_bzl",
     ],
 )
 

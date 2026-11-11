@@ -40,9 +40,11 @@ bool_flag(
     visibility = ["//visibility:public"],
 )
 
+# SDK builders also run across execution configuration transitions.
 bool_flag(
     name = "experimental_use_sh_toolchain",
     build_setting_default = False,
+    scope = "universal",
     visibility = ["//visibility:public"],
 )
 

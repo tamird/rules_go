@@ -15,6 +15,7 @@
 load("@bazel_skylib//rules:common_settings.bzl", "BuildSettingInfo")
 load("@rules_cc//cc/common:cc_common.bzl", "cc_common")
 load("@rules_cc//cc/common:cc_info.bzl", "CcInfo")
+load("@rules_shell//shell/toolchains:sh_exec_toolchain.bzl", "SH_EXEC_TOOLCHAIN_TYPE")
 load(
     "//go/private:common.bzl",
     "GO_TOOLCHAIN",
@@ -595,29 +596,38 @@ exit /b %GO_EXIT_CODE%
     else:
         # Pass (potentially) generated files in via args to support path mapping.
         args = ctx.actions.args()
-        args.add(ctx.outputs.out_pack)
-        args.add(ctx.outputs.out_covdata)
-        args.add(out)
-        args.add_all(ctx.files.srcs)
-
+        tools = [sdk.go]
+        executable = ctx.file._binary_wrapper
+        toolchain = None
         setting = ctx.attr._use_sh_toolchain_for_bootstrap_process_wrapper[BuildSettingInfo].value
         sh_toolchain = ctx.toolchains["@bazel_tools//tools/sh:toolchain_type"]
-        binary_wrapper = ctx.file._binary_wrapper
-        if setting and sh_toolchain:
-            binary_wrapper = ctx.actions.declare_file(name + "_binary_wrapper.sh")
+        shell_exec = ctx.toolchains[SH_EXEC_TOOLCHAIN_TYPE]
+        interpreter = shell_exec.sh_exec_toolchain.interpreter if shell_exec else None
+        if setting and interpreter and type(interpreter) != "string":
+            # A shebang cannot carry the interpreter and its runfiles to a worker.
+            args.add(ctx.file._binary_wrapper)
+            tools.append(ctx.file._binary_wrapper)
+            executable = interpreter
+            toolchain = SH_EXEC_TOOLCHAIN_TYPE
+        elif setting and sh_toolchain:
+            executable = ctx.actions.declare_file(name + "_binary_wrapper.sh")
             ctx.actions.expand_template(
                 template = ctx.file._binary_wrapper,
-                output = binary_wrapper,
+                output = executable,
                 is_executable = True,
                 substitutions = {
                     "#!/usr/bin/env bash": "#!{}".format(sh_toolchain.path),
                 },
             )
 
+        args.add(ctx.outputs.out_pack)
+        args.add(ctx.outputs.out_covdata)
+        args.add(out)
+        args.add_all(ctx.files.srcs)
         ctx.actions.run(
-            executable = binary_wrapper,
+            executable = executable,
             arguments = [args],
-            tools = [sdk.go],
+            tools = tools,
             env = {
                 "GOMAXPROCS": "1",
                 "GOTOOLCHAIN": "local",
@@ -632,7 +642,7 @@ exit /b %GO_EXIT_CODE%
                 ctx.files.srcs,
                 transitive = [sdk.headers, sdk.srcs, sdk.libs, sdk.tools],
             ),
-            toolchain = None,
+            toolchain = toolchain,
             outputs = [out, ctx.outputs.out_pack, ctx.outputs.out_covdata],
             execution_requirements = SUPPORTS_PATH_MAPPING_REQUIREMENT,
             mnemonic = "GoToolchainBinaryBuild",
@@ -672,16 +682,18 @@ go_tool_binary = rule(
     doc = """Used instead of go_binary for executables used in the toolchain.
 
 go_tool_binary depends on tools and libraries that are part of the Go SDK.
-It does not depend on other toolchains. It can only compile binaries that
-just have a main package and only depend on the standard library and don't
-require build constraints.
+It can only compile binaries that just have a main package and only depend
+on the standard library and don't require build constraints.
 
 It is currently only used to build the `builder` tool maintained as part of
 rules_go as well as the `pack` and `covdata` tools provided by the Go SDK in
 source form only as of Go 1.25. Combining these builds into a single action
 drastically reduces the overall build time due to Go's own caching mechanism.
 """,
-    toolchains = [config_common.toolchain_type("@bazel_tools//tools/sh:toolchain_type", mandatory = False)],
+    toolchains = [
+        config_common.toolchain_type("@bazel_tools//tools/sh:toolchain_type", mandatory = False),
+        config_common.toolchain_type(SH_EXEC_TOOLCHAIN_TYPE, mandatory = False),
+    ],
 )
 
 def gc_linkopts(ctx):
