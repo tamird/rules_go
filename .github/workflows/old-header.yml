@@ -1,0 +1,54 @@
+name: Check declared Go SDK sources with the Linux 3.16 syscall header
+on:
+  push:
+    branches: [qualification/stdlib-linux-3.16-header]
+permissions:
+  contents: read
+jobs:
+  compile:
+    if: github.repository == 'tamird/rules_go' && github.run_attempt == 1
+    runs-on: ubuntu-22.04
+    timeout-minutes: 55
+    env:
+      USE_BAZEL_VERSION: 9.3.1
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 3
+          persist-credentials: false
+      - name: Select the original x86-64 syscall-number header on this worker
+        run: |
+          set -euo pipefail
+          cp .github/qualification/stdlib-check.py "$RUNNER_TEMP/stdlib-check.py"
+          mkdir "$RUNNER_TEMP/old-header-evidence"
+          cd "$RUNNER_TEMP/old-header-evidence"
+          test "$(uname -m)" = x86_64
+          test "$(bazel --version)" = 'bazel 9.3.1'
+          ref=19583ca584d6f574384e17fe7613dfaeadcdc4a6
+          for f in syscallhdr.sh syscall_64.tbl; do
+            curl --fail --location --retry 3 "https://raw.githubusercontent.com/torvalds/linux/$ref/arch/x86/syscalls/$f" -o "$f"
+          done
+          echo '1b0e33b6ae5f6f81aec33fe6f858db77107e054a1a4a80be34b632bc5ec57123  syscallhdr.sh' | sha256sum --check
+          echo 'e512b58c38295cbfbed5865f58c1f16e712e77ad9475cc8fc9ac8b9b599e9fc7  syscall_64.tbl' | sha256sum --check
+          sh syscallhdr.sh syscall_64.tbl unistd_64.h common,64
+          sudo install -D -m 0644 unistd_64.h /opt/linux-3.16-headers/asm/unistd_64.h
+          for mode in host old; do
+            flags=()
+            if [[ $mode == old ]]; then flags=(-I/opt/linux-3.16-headers); fi
+            cc "${flags[@]}" -E -dM -include sys/syscall.h -x c /dev/null > "$mode-macros.txt"
+            cc "${flags[@]}" -M -include sys/syscall.h -x c /dev/null > "$mode-includes.txt"
+          done
+          grep -qF '/opt/linux-3.16-headers/asm/unistd_64.h' old-includes.txt
+          for symbol in SYS_getrandom SYS_seccomp; do
+            grep -q "^#define $symbol " host-macros.txt
+            if grep -q "^#define $symbol " old-macros.txt; then exit 1; fi
+          done
+          unshare -Ur true
+      - name: Compile the candidate and compare both inventories with the measured parent sandbox
+        run: python3 "$RUNNER_TEMP/stdlib-check.py"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        if: always()
+        with:
+          name: old-linux-syscall-header-stdlib
+          path: ${{ runner.temp }}/old-header-evidence
+          if-no-files-found: error
